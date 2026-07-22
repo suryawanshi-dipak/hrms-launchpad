@@ -163,8 +163,16 @@ public class LandingPage {
         
         Label dzSub = new Label("hrms_update_*.zip"); dzSub.getStyleClass().add("dz-sub");
         dz.getChildren().addAll(dzIcon, dzTitle, dzSub);
-        dz.setOnMouseClicked(e -> nav.showValidation(false));
-
+        dz.setOnMouseClicked(e -> {
+            javafx.stage.FileChooser fileChooser = new javafx.stage.FileChooser();
+            fileChooser.setTitle("Select Update Zip File");
+            fileChooser.getExtensionFilters().add(new javafx.stage.FileChooser.ExtensionFilter("ZIP Files", "*.zip"));
+            java.io.File selectedFile = fileChooser.showOpenDialog(dz.getScene().getWindow());
+            if (selectedFile != null) {
+                nav.setSelectedZip(selectedFile);
+                nav.showValidation(false);
+            }
+        });
         // Staged file chip preview
         HBox chip = new HBox(10);
         chip.getStyleClass().add("file-chip");
@@ -255,7 +263,7 @@ public class LandingPage {
     private TableView<HistRow> buildHistTable() {
         TableView<HistRow> table = new TableView<>();
         table.getStyleClass().add("hist-table");
-        table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
+        table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
         table.setSelectionModel(null);
 
         TableColumn<HistRow,String> tsCol  = col("TIMESTAMP", "timestamp", 180);

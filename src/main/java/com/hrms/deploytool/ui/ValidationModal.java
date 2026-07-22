@@ -26,7 +26,8 @@ public class ValidationModal {
 
     private Label[] icons; 
     private Label[] texts;
-    private Timeline timeline;
+    private javafx.concurrent.Task<com.hrms.deploytool.util.ZipUtil.ZipStats> validationTask;
+    private Label filenameLabel;
 
     /**
      * Constructs the ValidationModal.
@@ -62,7 +63,9 @@ public class ValidationModal {
         
         HBox hl = new HBox(8); 
         hl.setAlignment(Pos.CENTER_LEFT);
-        hl.getChildren().addAll(UI.zipIcon(), UI.bold("hrms_update.zip","modal-fname"));
+        String filename = (nav.getSelectedZip() != null) ? nav.getSelectedZip().getName() : "hrms_update.zip";
+        filenameLabel = UI.bold(filename,"modal-fname");
+        hl.getChildren().addAll(UI.zipIcon(), filenameLabel);
         
         Region sp = new Region(); 
         HBox.setHgrow(sp, Priority.ALWAYS);
@@ -97,40 +100,68 @@ public class ValidationModal {
     }
 
     /**
-     * Initiates the validation flow animation.
+     * Initiates the validation flow animation via background task.
      * @param fail If true, the validation process will mock a corruption failure.
      */
     public void startFlow(boolean fail) {
+        if (nav.getSelectedZip() != null) {
+            filenameLabel.setText(nav.getSelectedZip().getName());
+        }
+
         resultBox.getChildren().clear();
         resetIcons();
-        if (timeline != null) timeline.stop();
+        if (validationTask != null) validationTask.cancel();
 
-        int[] step = {0};
-        timeline = new Timeline();
+        validationTask = new javafx.concurrent.Task<>() {
+            @Override
+            protected com.hrms.deploytool.util.ZipUtil.ZipStats call() throws Exception {
+                if (nav.getSelectedZip() == null) {
+                    throw new Exception("No zip file selected");
+                }
+                
+                if (fail) {
+                    javafx.application.Platform.runLater(() -> tick(0, false));
+                    Thread.sleep(600);
+                    throw new Exception("Simulated corruption for demo purposes");
+                }
 
-        for (int i = 0; i <= STEPS.length; i++) {
-            final int idx = i;
-            // Schedule keyframes to tick through the list every 600ms
-            KeyFrame kf = new KeyFrame(Duration.millis(i * 600), e -> tick(idx, fail, step));
-            timeline.getKeyFrames().add(kf);
-        }
-        timeline.setCycleCount(1);
-        timeline.play();
+                return com.hrms.deploytool.util.ZipUtil.extractToTempDir(
+                    nav.getSelectedZip(), 
+                    step -> javafx.application.Platform.runLater(() -> tick(step, false))
+                );
+            }
+        };
+
+        validationTask.setOnSucceeded(e -> {
+            com.hrms.deploytool.util.ZipUtil.ZipStats stats = validationTask.getValue();
+            nav.setZipStats(stats);
+            tick(STEPS.length, false);
+            showSuccess(stats);
+        });
+
+        validationTask.setOnFailed(e -> {
+            Throwable ex = validationTask.getException();
+            System.err.println("Validation failed: " + ex.getMessage());
+            tick(1, true);
+            showError();
+        });
+
+        new Thread(validationTask).start();
     }
 
     /**
      * Stops the animation and cleans up. Should be called if navigating away early.
      */
     public void stopFlow() {
-        if (timeline != null) timeline.stop();
+        if (validationTask != null) validationTask.cancel();
     }
 
     /** Logic applied on every tick of the timeline animation to update rows. */
-    private void tick(int idx, boolean fail, int[] step) {
+    private void tick(int idx, boolean fail) {
         // Mark previous done / fail
         if (idx > 0) {
             int p = idx - 1;
-            boolean pf = fail && p == 1;
+            boolean pf = fail && p >= 1; // if failed, mark the last attempted step as fail
             icons[p].setText(pf ? "✗" : "✓");
             icons[p].setStyle(pf ? "-fx-text-fill:#e06c75;-fx-font-size:14px;"
                                  : "-fx-text-fill:#7ec97e;-fx-font-size:14px;");
@@ -138,18 +169,18 @@ public class ValidationModal {
         }
 
         // Trigger failure midway
-        if (fail && idx == 1) {
-            icons[idx].setText("✗");
-            icons[idx].setStyle("-fx-text-fill:#e06c75;-fx-font-size:14px;");
-            texts[idx].getStyleClass().setAll("check-row-dim");
-            timeline.stop();
-            showError();
+        if (fail) {
+            if (idx < icons.length) {
+                icons[idx].setText("✗");
+                icons[idx].setStyle("-fx-text-fill:#e06c75;-fx-font-size:14px;");
+                texts[idx].getStyleClass().setAll("check-row-dim");
+            }
             return;
         }
         
         // Completion
         if (idx >= STEPS.length) {
-            showSuccess(); return;
+            return;
         }
 
         // Active state with spinning animation
@@ -164,7 +195,7 @@ public class ValidationModal {
     }
 
     /** Displays the success alert box and continue button. */
-    private void showSuccess() {
+    private void showSuccess(com.hrms.deploytool.util.ZipUtil.ZipStats stats) {
         resultBox.getChildren().clear();
         VBox box = new VBox(2); 
         box.getStyleClass().add("result-success");
@@ -172,7 +203,8 @@ public class ValidationModal {
         Label t = new Label("zip extracted successfully"); 
         t.getStyleClass().add("result-title-ok");
         
-        Label s = new Label("214 files · 18.4 mb · 3 excluded by policy"); 
+        String sizeMb = String.format("%.1f", stats.totalBytes / 1024.0 / 1024.0);
+        Label s = new Label(stats.fileCount + " files · " + sizeMb + " mb · 0 excluded by policy"); 
         s.getStyleClass().add("result-sub-ok");
         
         box.getChildren().addAll(t, s);

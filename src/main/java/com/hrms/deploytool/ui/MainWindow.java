@@ -14,9 +14,25 @@ public class MainWindow {
     private final Stage stage;
     private final StackPane root = new StackPane();
 
-    private final LandingPage  landingPage;
-    private final ValidationModal validationModal;
-    private final WorkspacePage workspacePage;
+    private LandingPage landingPage;
+    private ValidationModal validationModal;
+    private WorkspacePage workspacePage;
+
+    private java.io.File selectedZip;
+    private java.io.File extractedFolder;
+    private com.hrms.deploytool.util.ZipUtil.ZipStats zipStats;
+
+    public void setSelectedZip(java.io.File selectedZip) { this.selectedZip = selectedZip; }
+    public java.io.File getSelectedZip() { return selectedZip; }
+    
+    public void setExtractedFolder(java.io.File extractedFolder) { this.extractedFolder = extractedFolder; }
+    public java.io.File getExtractedFolder() { return extractedFolder; }
+
+    public void setZipStats(com.hrms.deploytool.util.ZipUtil.ZipStats stats) {
+        this.zipStats = stats;
+        this.extractedFolder = (stats != null) ? stats.extractedDir : null;
+    }
+    public com.hrms.deploytool.util.ZipUtil.ZipStats getZipStats() { return zipStats; }
 
     /**
      * Constructs the main window and initializes all UI pages.
@@ -37,7 +53,8 @@ public class MainWindow {
 
     /** Displays the initial landing dashboard page. */
     public void showLanding() {
-        validationModal.stopFlow();
+        if (validationModal != null) validationModal.stopFlow();
+        landingPage = new LandingPage(this);
         root.getChildren().setAll(landingPage.getNode());
     }
 
@@ -46,14 +63,15 @@ public class MainWindow {
      * @param failMode True to mock a corrupted archive, False for a successful check.
      */
     public void showValidation(boolean failMode) {
-        // Keep landing behind, overlay modal
+        validationModal = new ValidationModal(this);
         root.getChildren().setAll(landingPage.getNode(), validationModal.getNode());
         validationModal.startFlow(failMode);
     }
 
     /** Displays the workspace planning page. */
     public void showWorkspace() {
-        validationModal.stopFlow();
+        if (validationModal != null) validationModal.stopFlow();
+        workspacePage = new WorkspacePage(this);
         root.getChildren().setAll(workspacePage.getNode());
     }
 }

@@ -69,9 +69,16 @@ public class WorkspacePage {
 
         HBox left = new HBox(6); 
         left.setAlignment(Pos.CENTER_LEFT);
+        String filename = (nav.getSelectedZip() != null) ? nav.getSelectedZip().getName() : "hrms_update.zip";
+        String statsText = "";
+        com.hrms.deploytool.util.ZipUtil.ZipStats stats = nav.getZipStats();
+        if (stats != null) {
+            String sizeMb = String.format("%.1f", stats.totalBytes / 1024.0 / 1024.0);
+            statsText = " · " + stats.fileCount + " files · " + sizeMb + " mb";
+        }
         left.getChildren().addAll(
             UI.checkCircle(15,"#7ec97e"),
-            UI.label("hrms_update.zip extracted · 214 files · 18.4 mb · comparing against server","toolbar-status")
+            UI.label(filename + " extracted" + statsText + " · comparing against server","toolbar-status")
         );
         
         Region sp = new Region(); 
@@ -197,10 +204,11 @@ public class WorkspacePage {
         choose.getStyleClass().add("pkg-choose"); 
         choose.setOnMouseClicked(e -> nav.showLanding());
         
+        String filename = (nav.getSelectedZip() != null) ? nav.getSelectedZip().getName() : "hrms_update3.zip";
         row.getChildren().addAll(
             UI.zipIcon(),
             UI.label("update package","pkg-dim"),
-            UI.bold("hrms_update3.zip","pkg-name"),
+            UI.bold(filename,"pkg-name"),
             UI.label("/","pkg-dim"), chk,
             UI.label("·","pkg-dim"), UI.label("wrapper folder detected","pkg-dim"),
             sp, choose
@@ -250,31 +258,57 @@ public class WorkspacePage {
     }
 
     /** Mocks the local zip extraction TreeView data. */
+    @SuppressWarnings("unchecked")
     private TreeView<String> buildLocalTree() {
-        TreeItem<String> root = treeFolder("hrms_update");
-        TreeItem<String> backend = treeFolder("backend");
-        backend.getChildren().addAll(
-            treeFile("server.js", "OVERWRITE", "14 KB"),
-            treeFolder("routes"),
-            treeFile("hr.js", "NEW", null),
-            treeFile(".env", "EXCLUDED", null),
-            treeFile("node_modules", "EXCLUDED", null),
-            treeFile("uploads", "EXCLUDED", null)
-        );
-        TreeItem<String> frontend = treeFolder("frontend");
-        TreeItem<String> dist = treeFolder("dist");
-        dist.getChildren().add(treeFile("package.json","OVERWRITE","2 KB"));
-        frontend.getChildren().add(dist);
-        root.getChildren().addAll(backend, frontend);
+        java.io.File extractedFolder = nav.getExtractedFolder();
+        TreeItem<String> rootNode;
+        if (extractedFolder != null && extractedFolder.exists()) {
+            rootNode = buildTreeRecursively(extractedFolder);
+            String filename = (nav.getSelectedZip() != null) ? nav.getSelectedZip().getName() : "hrms_update";
+            rootNode.setValue("📁 " + filename);
+        } else {
+            rootNode = treeFolder("hrms_update (mock)");
+            TreeItem<String> backend = treeFolder("backend");
+            backend.getChildren().addAll(
+                treeFile("server.js", "OVERWRITE", "14 KB"),
+                treeFolder("routes"),
+                treeFile("hr.js", "NEW", null),
+                treeFile(".env", "EXCLUDED", null),
+                treeFile("node_modules", "EXCLUDED", null),
+                treeFile("uploads", "EXCLUDED", null)
+            );
+            TreeItem<String> frontend = treeFolder("frontend");
+            TreeItem<String> dist = treeFolder("dist");
+            dist.getChildren().add(treeFile("package.json","OVERWRITE","2 KB"));
+            frontend.getChildren().add(dist);
+            rootNode.getChildren().addAll(backend, frontend);
+        }
 
-        TreeView<String> tv = new TreeView<>(root);
+        TreeView<String> tv = new TreeView<>(rootNode);
         tv.getStyleClass().add("tree-view");
         tv.setShowRoot(false);
         tv.setCellFactory(v -> new FileTreeCell());
         return tv;
     }
 
+    private TreeItem<String> buildTreeRecursively(java.io.File dir) {
+        TreeItem<String> item = treeFolder(dir.getName());
+        java.io.File[] files = dir.listFiles();
+        if (files != null) {
+            for (java.io.File file : files) {
+                if (file.isDirectory()) {
+                    item.getChildren().add(buildTreeRecursively(file));
+                } else {
+                    String size = (file.length() / 1024) + " KB";
+                    item.getChildren().add(treeFile(file.getName(), null, size));
+                }
+            }
+        }
+        return item;
+    }
+
     /** Mocks the remote SFTP server TreeView data. */
+    @SuppressWarnings("unchecked")
     private TreeView<String> buildServerTree() {
         TreeItem<String> root = treeFolder("HR_MANAGEMENT_SYSTEM [dest]");
         TreeItem<String> backend = treeFolder("backend");
