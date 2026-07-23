@@ -5,6 +5,7 @@ import javafx.scene.Node;
 import javafx.scene.control.*;
 import javafx.scene.layout.*;
 
+
 /**
  * Shared UI factory methods and components.
  * This class abstracts away boilerplate JavaFX setup and CSS class bindings,
@@ -18,11 +19,10 @@ public class UI {
      * Builds a standardized top navigation bar used across main application pages.
      * @param titleText The main title displayed on the left.
      * @param leftIcon The icon node displayed next to the title.
-     * @param pageMeta The metadata string (e.g., "page 1 of 3") displayed on the right.
      * @param additionalIcons Any extra icon buttons (like history, settings, etc.) to add to the right side.
      * @return An HBox representing the top bar.
      */
-    public static HBox buildTopbar(String titleText, Node leftIcon, String pageMeta, Node... additionalIcons) {
+    public static HBox buildTopbar(String titleText, Node leftIcon, Node... additionalIcons) {
         HBox bar = new HBox(8);
         bar.getStyleClass().add("topbar");
         bar.setAlignment(Pos.CENTER_LEFT);
@@ -36,7 +36,6 @@ public class UI {
 
         HBox right = new HBox(14);
         right.setAlignment(Pos.CENTER_RIGHT);
-        right.getChildren().addAll(UI.metaLabel(pageMeta), UI.metaLabel("20 jul 2026"));
         right.getChildren().addAll(additionalIcons);
 
         bar.getChildren().addAll(left, spacer, right);

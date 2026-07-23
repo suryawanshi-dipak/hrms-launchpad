@@ -1,9 +1,15 @@
 package com.hrms.deploytool.ui;
 
+import com.hrms.deploytool.archive.ZipExtractor;
+import com.hrms.deploytool.deploy.ExclusionMatcher;
+
 import javafx.geometry.*;
 import javafx.scene.Node;
 import javafx.scene.control.*;
 import javafx.scene.layout.*;
+
+import java.io.File;
+import java.nio.file.Path;
 
 /** 
  * Page 3 — Workspace layout.
@@ -14,11 +20,17 @@ public class WorkspacePage {
 
     private final MainWindow nav;
     private final BorderPane root = new BorderPane();
+    private final ExclusionMatcher exclusionMatcher = new ExclusionMatcher();
     
     // Kept as instance variables to allow toggling visibility
     private VBox connPanel;
     private Button connToggleBtn;
     private HBox verifiedBox;
+
+    // Stats counters for the local tree
+    private int totalFileCount = 0;
+    private int excludedCount = 0;
+    private long totalSizeBytes = 0;
 
     /**
      * Constructs the WorkspacePage.
@@ -39,12 +51,9 @@ public class WorkspacePage {
         VBox frame = new VBox(0);
         frame.getStyleClass().addAll("bg-black", "padding-24");
 
-        // Use centralized UI builder for the frame label
-        frame.getChildren().add(UI.frameLabel("PAGE 3 OF 3 — WORKSPACE"));
-
         // App window using the centralized UI builder
         VBox win = UI.appWindow(
-            UI.buildTopbar("ZIP file extractor", UI.zipIcon(), "page 3 of 3",
+            UI.buildTopbar("ZIP file extractor", UI.zipIcon(),
                 UI.iconBtn("⏱", "History"), UI.iconBtn("📄", "View log"),
                 UI.iconBtn("↻", "Refresh"),  UI.iconBtn("✉", "Send mail")
             ),
@@ -71,10 +80,10 @@ public class WorkspacePage {
         left.setAlignment(Pos.CENTER_LEFT);
         String filename = (nav.getSelectedZip() != null) ? nav.getSelectedZip().getName() : "hrms_update.zip";
         String statsText = "";
-        com.hrms.deploytool.util.ZipUtil.ZipStats stats = nav.getZipStats();
-        if (stats != null) {
-            String sizeMb = String.format("%.1f", stats.totalBytes / 1024.0 / 1024.0);
-            statsText = " · " + stats.fileCount + " files · " + sizeMb + " mb";
+        ZipExtractor.ExtractionResult result = nav.getExtractionResult();
+        if (result != null) {
+            String sizeMb = String.format("%.1f", result.totalBytes() / 1024.0 / 1024.0);
+            statsText = " · " + result.fileCount() + " files · " + sizeMb + " mb";
         }
         left.getChildren().addAll(
             UI.checkCircle(15,"#7ec97e"),
@@ -204,13 +213,20 @@ public class WorkspacePage {
         choose.getStyleClass().add("pkg-choose"); 
         choose.setOnMouseClicked(e -> nav.showLanding());
         
-        String filename = (nav.getSelectedZip() != null) ? nav.getSelectedZip().getName() : "hrms_update3.zip";
+        String filename = (nav.getSelectedZip() != null) ? nav.getSelectedZip().getName() : "hrms_update.zip";
+
+        // Show wrapper folder info if detected
+        ZipExtractor.ExtractionResult result = nav.getExtractionResult();
+        String wrapperText = (result != null && result.wrapperFolderName() != null) 
+            ? "wrapper folder '" + result.wrapperFolderName() + "' detected → mapped to app root"
+            : "no wrapper folder";
+
         row.getChildren().addAll(
             UI.zipIcon(),
             UI.label("update package","pkg-dim"),
             UI.bold(filename,"pkg-name"),
             UI.label("/","pkg-dim"), chk,
-            UI.label("·","pkg-dim"), UI.label("wrapper folder detected","pkg-dim"),
+            UI.label("·","pkg-dim"), UI.label(wrapperText,"pkg-dim"),
             sp, choose
         );
         return row;
@@ -244,11 +260,17 @@ public class WorkspacePage {
         if (!server) {
             hdr.getChildren().addAll(UI.packageIcon(), UI.label("Update package","explorer-header-label"));
             Region sp = new Region(); HBox.setHgrow(sp, Priority.ALWAYS);
-            hdr.getChildren().add(UI.label("local · read-only","explorer-header-sub"));
+            // Stats will be populated after tree is built
+            String statsLabel = "local · read-only";
+            if (totalFileCount > 0) {
+                String sizeMb = String.format("%.1f MB", totalSizeBytes / 1024.0 / 1024.0);
+                statsLabel = totalFileCount + " files · " + sizeMb + " · " + excludedCount + " excluded";
+            }
+            hdr.getChildren().addAll(sp, UI.label(statsLabel,"explorer-header-sub"));
         } else {
             hdr.getChildren().addAll(UI.serverIcon(), UI.label("Production server","explorer-header-label"));
             Region sp = new Region(); HBox.setHgrow(sp, Priority.ALWAYS);
-            hdr.getChildren().add(UI.label("SFTP · destination","explorer-header-sub"));
+            hdr.getChildren().addAll(sp, UI.label("SFTP · destination","explorer-header-sub"));
         }
 
         TreeView<String> tree = server ? buildServerTree() : buildLocalTree();
@@ -257,31 +279,26 @@ public class WorkspacePage {
         return ex;
     }
 
-    /** Mocks the local zip extraction TreeView data. */
+    /** Builds the local file tree from the extracted zip, applying exclusion tags. */
     @SuppressWarnings("unchecked")
     private TreeView<String> buildLocalTree() {
-        java.io.File extractedFolder = nav.getExtractedFolder();
+        ZipExtractor.ExtractionResult result = nav.getExtractionResult();
         TreeItem<String> rootNode;
-        if (extractedFolder != null && extractedFolder.exists()) {
-            rootNode = buildTreeRecursively(extractedFolder);
-            String filename = (nav.getSelectedZip() != null) ? nav.getSelectedZip().getName() : "hrms_update";
+
+        if (result != null && result.extractedRoot() != null && result.extractedRoot().exists()) {
+            // Real extracted data — build tree with exclusion tags
+            totalFileCount = 0;
+            excludedCount = 0;
+            totalSizeBytes = 0;
+
+            rootNode = buildTreeWithExclusions(result.extractedRoot(), result.extractedRoot().toPath());
+            String filename = (nav.getSelectedZip() != null) ? nav.getSelectedZip().getName() : "update package";
             rootNode.setValue("📁 " + filename);
         } else {
-            rootNode = treeFolder("hrms_update (mock)");
-            TreeItem<String> backend = treeFolder("backend");
-            backend.getChildren().addAll(
-                treeFile("server.js", "OVERWRITE", "14 KB"),
-                treeFolder("routes"),
-                treeFile("hr.js", "NEW", null),
-                treeFile(".env", "EXCLUDED", null),
-                treeFile("node_modules", "EXCLUDED", null),
-                treeFile("uploads", "EXCLUDED", null)
-            );
-            TreeItem<String> frontend = treeFolder("frontend");
-            TreeItem<String> dist = treeFolder("dist");
-            dist.getChildren().add(treeFile("package.json","OVERWRITE","2 KB"));
-            frontend.getChildren().add(dist);
-            rootNode.getChildren().addAll(backend, frontend);
+            // Fallback mock data
+            rootNode = treeFolder("hrms_update (no data)");
+            Label placeholder = new Label("Select and validate a zip file to see contents");
+            placeholder.getStyleClass().add("text-secondary");
         }
 
         TreeView<String> tv = new TreeView<>(rootNode);
@@ -291,20 +308,56 @@ public class WorkspacePage {
         return tv;
     }
 
-    private TreeItem<String> buildTreeRecursively(java.io.File dir) {
+    /**
+     * Recursively builds a TreeItem tree from an extracted directory,
+     * applying the ExclusionMatcher to tag files as [EXCLUDED] or [NEW].
+     */
+    private TreeItem<String> buildTreeWithExclusions(File dir, Path rootPath) {
         TreeItem<String> item = treeFolder(dir.getName());
-        java.io.File[] files = dir.listFiles();
+        File[] files = dir.listFiles();
         if (files != null) {
-            for (java.io.File file : files) {
+            // Sort: directories first, then files alphabetically
+            java.util.Arrays.sort(files, (a, b) -> {
+                if (a.isDirectory() && !b.isDirectory()) return -1;
+                if (!a.isDirectory() && b.isDirectory()) return 1;
+                return a.getName().compareToIgnoreCase(b.getName());
+            });
+
+            for (File file : files) {
+                Path relativePath = rootPath.relativize(file.toPath());
+                boolean excluded = exclusionMatcher.isExcluded(relativePath);
+
                 if (file.isDirectory()) {
-                    item.getChildren().add(buildTreeRecursively(file));
+                    if (excluded) {
+                        // Show excluded directories as leaf nodes with [EXCLUDED] tag
+                        item.getChildren().add(treeFile(file.getName(), "EXCLUDED", null));
+                        excludedCount++;
+                    } else {
+                        item.getChildren().add(buildTreeWithExclusions(file, rootPath));
+                    }
                 } else {
-                    String size = (file.length() / 1024) + " KB";
-                    item.getChildren().add(treeFile(file.getName(), null, size));
+                    totalFileCount++;
+                    totalSizeBytes += file.length();
+
+                    if (excluded) {
+                        excludedCount++;
+                        item.getChildren().add(treeFile(file.getName(), "EXCLUDED", null));
+                    } else {
+                        String size = formatFileSize(file.length());
+                        // Tag as NEW since we can't compare with server yet (SSH not implemented)
+                        item.getChildren().add(treeFile(file.getName(), "NEW", size));
+                    }
                 }
             }
         }
         return item;
+    }
+
+    /** Formats file size in human-readable form. */
+    private String formatFileSize(long bytes) {
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024 * 1024) return (bytes / 1024) + " KB";
+        return String.format("%.1f MB", bytes / 1024.0 / 1024.0);
     }
 
     /** Mocks the remote SFTP server TreeView data. */

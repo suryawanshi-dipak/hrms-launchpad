@@ -7,3 +7,8 @@ logs/
 .vscode/
 *.class
 .DS_Store
+
+# Local helper scripts and temp files
+run*.bat
+run*.ps1
+classpath.txt

@@ -1,8 +1,15 @@
 package com.hrms.deploytool.ui;
 
+import com.hrms.deploytool.archive.ZipExtractor;
+import com.hrms.deploytool.archive.ZipValidator;
+
 import javafx.scene.Parent;
 import javafx.scene.layout.*;
 import javafx.stage.Stage;
+
+import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
 
 /** 
  * Root navigation controller.
@@ -18,21 +25,26 @@ public class MainWindow {
     private ValidationModal validationModal;
     private WorkspacePage workspacePage;
 
-    private java.io.File selectedZip;
-    private java.io.File extractedFolder;
-    private com.hrms.deploytool.util.ZipUtil.ZipStats zipStats;
+    private File selectedZip;
+    private ZipValidator.ValidationResult validationResult;
+    private ZipExtractor.ExtractionResult extractionResult;
 
-    public void setSelectedZip(java.io.File selectedZip) { this.selectedZip = selectedZip; }
-    public java.io.File getSelectedZip() { return selectedZip; }
+    /** Tracks temp directories for cleanup on exit. */
+    private final List<File> tempDirsToCleanup = new ArrayList<>();
+
+    public void setSelectedZip(File selectedZip) { this.selectedZip = selectedZip; }
+    public File getSelectedZip() { return selectedZip; }
     
-    public void setExtractedFolder(java.io.File extractedFolder) { this.extractedFolder = extractedFolder; }
-    public java.io.File getExtractedFolder() { return extractedFolder; }
+    public void setValidationResult(ZipValidator.ValidationResult result) { this.validationResult = result; }
+    public ZipValidator.ValidationResult getValidationResult() { return validationResult; }
 
-    public void setZipStats(com.hrms.deploytool.util.ZipUtil.ZipStats stats) {
-        this.zipStats = stats;
-        this.extractedFolder = (stats != null) ? stats.extractedDir : null;
+    public void setExtractionResult(ZipExtractor.ExtractionResult result) {
+        this.extractionResult = result;
+        if (result != null && result.rawTempDir() != null) {
+            tempDirsToCleanup.add(result.rawTempDir());
+        }
     }
-    public com.hrms.deploytool.util.ZipUtil.ZipStats getZipStats() { return zipStats; }
+    public ZipExtractor.ExtractionResult getExtractionResult() { return extractionResult; }
 
     /**
      * Constructs the main window and initializes all UI pages.
@@ -51,6 +63,9 @@ public class MainWindow {
     /** @return The base container holding the active pages. */
     public Parent getRoot() { return root; }
 
+    /** @return The primary JavaFX stage. */
+    public Stage getStage() { return stage; }
+
     /** Displays the initial landing dashboard page. */
     public void showLanding() {
         if (validationModal != null) validationModal.stopFlow();
@@ -59,13 +74,14 @@ public class MainWindow {
     }
 
     /**
-     * Overlays the validation mock modal over the landing page.
-     * @param failMode True to mock a corrupted archive, False for a successful check.
+     * Overlays the validation modal over the landing page.
+     * Validation results are determined by the actual zip file content,
+     * not a demo toggle.
      */
-    public void showValidation(boolean failMode) {
+    public void showValidation() {
         validationModal = new ValidationModal(this);
         root.getChildren().setAll(landingPage.getNode(), validationModal.getNode());
-        validationModal.startFlow(failMode);
+        validationModal.startFlow();
     }
 
     /** Displays the workspace planning page. */
@@ -73,5 +89,16 @@ public class MainWindow {
         if (validationModal != null) validationModal.stopFlow();
         workspacePage = new WorkspacePage(this);
         root.getChildren().setAll(workspacePage.getNode());
+    }
+
+    /**
+     * Cleans up all temporary extraction directories.
+     * Called from App.stop() when the application is closing.
+     */
+    public void cleanup() {
+        for (File dir : tempDirsToCleanup) {
+            ZipExtractor.deleteRecursively(dir);
+        }
+        tempDirsToCleanup.clear();
     }
 }

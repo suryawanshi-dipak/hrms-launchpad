@@ -10,6 +10,8 @@ import com.hrms.deploytool.ui.MainWindow;
  */
 public class App extends Application {
 
+    private MainWindow window;
+
     public static void main(String[] args) {
         launch(args);
     }
@@ -20,7 +22,7 @@ public class App extends Application {
      */
     @Override
     public void start(Stage stage) {
-        MainWindow window = new MainWindow(stage);
+        window = new MainWindow(stage);
         Scene scene = new Scene(window.getRoot(), 980, 720);
         scene.getStylesheets().add(
             getClass().getResource("/com/hrms/deploytool/styles.css").toExternalForm()
@@ -30,5 +32,15 @@ public class App extends Application {
         stage.setMinHeight(600);
         stage.setScene(scene);
         stage.show();
+    }
+
+    /**
+     * Cleans up temporary extraction directories when the application closes.
+     */
+    @Override
+    public void stop() {
+        if (window != null) {
+            window.cleanup();
+        }
     }
 }

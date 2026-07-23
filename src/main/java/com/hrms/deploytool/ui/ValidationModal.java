@@ -1,16 +1,26 @@
 package com.hrms.deploytool.ui;
 
+import com.hrms.deploytool.archive.ZipExtractor;
+import com.hrms.deploytool.archive.ZipValidator;
+import com.hrms.deploytool.archive.ZipValidator.ValidationResult;
+import com.hrms.deploytool.archive.ZipExtractor.ExtractionResult;
+
 import javafx.animation.*;
+import javafx.application.Platform;
+import javafx.concurrent.Task;
 import javafx.geometry.*;
 import javafx.scene.Node;
 import javafx.scene.control.*;
 import javafx.scene.layout.*;
 import javafx.util.Duration;
 
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 /** 
  * Page 2 — Validation modal overlay with animated checklist.
- * This class handles the mock progression of the ZIP validation logic,
- * utilizing a JavaFX Timeline to animate through checks.
+ * Runs real ZIP validation (corruption, encryption, Zip Slip, structure)
+ * followed by extraction, displaying progress via animated step indicators.
  */
 public class ValidationModal {
 
@@ -19,15 +29,24 @@ public class ValidationModal {
     private final VBox checklistBox = new VBox(9);
     private final VBox resultBox    = new VBox(10);
 
+    /** Validation steps displayed in the checklist — matches ZipValidator step callbacks. */
     private static final String[] STEPS = {
         "reading archive", "checking for corruption",
-        "scanning for unsafe paths", "extracting files"
+        "checking for encryption", "scanning for unsafe paths",
+        "verifying structure"
     };
 
     private Label[] icons; 
     private Label[] texts;
-    private javafx.concurrent.Task<com.hrms.deploytool.util.ZipUtil.ZipStats> validationTask;
+    private Task<?> activeTask;
     private Label filenameLabel;
+
+    /** Shared single-thread executor — ensures only one validation runs at a time (LLD §7). */
+    private static final ExecutorService WORKER = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "deploy-worker");
+        t.setDaemon(true);
+        return t;
+    });
 
     /**
      * Constructs the ValidationModal.
@@ -52,8 +71,8 @@ public class ValidationModal {
         // Modal card container
         VBox card = new VBox(0);
         card.getStyleClass().add("modal-card");
-        card.setMaxWidth(340); 
-        card.setMaxHeight(280);
+        card.setMaxWidth(380); 
+        card.setMaxHeight(320);
         card.setPadding(new Insets(18, 20, 18, 20));
 
         // Header row
@@ -100,85 +119,85 @@ public class ValidationModal {
     }
 
     /**
-     * Initiates the validation flow animation via background task.
-     * @param fail If true, the validation process will mock a corruption failure.
+     * Initiates the real validation + extraction flow.
+     * Validation determines pass/fail based on actual zip content — no demo toggle.
      */
-    public void startFlow(boolean fail) {
+    public void startFlow() {
         if (nav.getSelectedZip() != null) {
             filenameLabel.setText(nav.getSelectedZip().getName());
         }
 
         resultBox.getChildren().clear();
         resetIcons();
-        if (validationTask != null) validationTask.cancel();
+        if (activeTask != null) activeTask.cancel();
 
-        validationTask = new javafx.concurrent.Task<>() {
+        activeTask = new Task<ExtractionResult>() {
             @Override
-            protected com.hrms.deploytool.util.ZipUtil.ZipStats call() throws Exception {
+            protected ExtractionResult call() throws Exception {
                 if (nav.getSelectedZip() == null) {
                     throw new Exception("No zip file selected");
                 }
-                
-                if (fail) {
-                    javafx.application.Platform.runLater(() -> tick(0, false));
-                    Thread.sleep(600);
-                    throw new Exception("Simulated corruption for demo purposes");
+
+                // Phase 1: Validate
+                ValidationResult validation = ZipValidator.validate(
+                    nav.getSelectedZip(),
+                    step -> Platform.runLater(() -> tick(step, false))
+                );
+
+                if (!validation.valid()) {
+                    throw new Exception(validation.errorMessage());
                 }
 
-                return com.hrms.deploytool.util.ZipUtil.extractToTempDir(
-                    nav.getSelectedZip(), 
-                    step -> javafx.application.Platform.runLater(() -> tick(step, false))
+                // Store validation result
+                Platform.runLater(() -> nav.setValidationResult(validation));
+
+                // Phase 2: Extract
+                ExtractionResult extraction = ZipExtractor.extract(
+                    nav.getSelectedZip(),
+                    step -> {} // extraction is a single step, already shown as last validation step
                 );
+
+                return extraction;
             }
         };
 
-        validationTask.setOnSucceeded(e -> {
-            com.hrms.deploytool.util.ZipUtil.ZipStats stats = validationTask.getValue();
-            nav.setZipStats(stats);
-            tick(STEPS.length, false);
-            showSuccess(stats);
+        activeTask.setOnSucceeded(e -> {
+            @SuppressWarnings("unchecked")
+            ExtractionResult result = ((Task<ExtractionResult>) activeTask).getValue();
+            nav.setExtractionResult(result);
+            tick(STEPS.length, false); // Mark all steps complete
+            showSuccess(result);
         });
 
-        validationTask.setOnFailed(e -> {
-            Throwable ex = validationTask.getException();
+        activeTask.setOnFailed(e -> {
+            Throwable ex = activeTask.getException();
             System.err.println("Validation failed: " + ex.getMessage());
-            tick(1, true);
-            showError();
+            // Mark the current step as failed
+            markCurrentStepFailed();
+            showError(ex.getMessage());
         });
 
-        new Thread(validationTask).start();
+        WORKER.submit(activeTask);
     }
 
     /**
-     * Stops the animation and cleans up. Should be called if navigating away early.
+     * Stops the validation and cleans up. Should be called if navigating away early.
      */
     public void stopFlow() {
-        if (validationTask != null) validationTask.cancel();
+        if (activeTask != null) activeTask.cancel();
     }
 
-    /** Logic applied on every tick of the timeline animation to update rows. */
+    /** Logic applied on every tick to update checklist row visuals. */
     private void tick(int idx, boolean fail) {
-        // Mark previous done / fail
+        // Mark previous step as done
         if (idx > 0) {
             int p = idx - 1;
-            boolean pf = fail && p >= 1; // if failed, mark the last attempted step as fail
-            icons[p].setText(pf ? "✗" : "✓");
-            icons[p].setStyle(pf ? "-fx-text-fill:#e06c75;-fx-font-size:14px;"
-                                 : "-fx-text-fill:#7ec97e;-fx-font-size:14px;");
-            texts[p].getStyleClass().setAll(pf ? "check-row-dim" : "check-row-text");
+            icons[p].setText("✓");
+            icons[p].setStyle("-fx-text-fill:#7ec97e;-fx-font-size:14px;");
+            texts[p].getStyleClass().setAll("check-row-text");
         }
 
-        // Trigger failure midway
-        if (fail) {
-            if (idx < icons.length) {
-                icons[idx].setText("✗");
-                icons[idx].setStyle("-fx-text-fill:#e06c75;-fx-font-size:14px;");
-                texts[idx].getStyleClass().setAll("check-row-dim");
-            }
-            return;
-        }
-        
-        // Completion
+        // Completion — all steps done
         if (idx >= STEPS.length) {
             return;
         }
@@ -194,8 +213,33 @@ public class ValidationModal {
         spin.play();
     }
 
-    /** Displays the success alert box and continue button. */
-    private void showSuccess(com.hrms.deploytool.util.ZipUtil.ZipStats stats) {
+    /** Marks the most recently active step as failed. */
+    private void markCurrentStepFailed() {
+        for (int i = STEPS.length - 1; i >= 0; i--) {
+            String iconText = icons[i].getText();
+            if ("◉".equals(iconText) || "◌".equals(iconText)) {
+                if ("◉".equals(iconText)) {
+                    // This was the active step — mark it as failed
+                    icons[i].setText("✗");
+                    icons[i].setStyle("-fx-text-fill:#e06c75;-fx-font-size:14px;");
+                    texts[i].getStyleClass().setAll("check-row-dim");
+                    return;
+                }
+            }
+        }
+        // If no active step found, mark the first uncompleted one
+        for (int i = 0; i < STEPS.length; i++) {
+            if (!"✓".equals(icons[i].getText())) {
+                icons[i].setText("✗");
+                icons[i].setStyle("-fx-text-fill:#e06c75;-fx-font-size:14px;");
+                texts[i].getStyleClass().setAll("check-row-dim");
+                return;
+            }
+        }
+    }
+
+    /** Displays the success result box with extraction stats and continue button. */
+    private void showSuccess(ExtractionResult result) {
         resultBox.getChildren().clear();
         VBox box = new VBox(2); 
         box.getStyleClass().add("result-success");
@@ -203,29 +247,53 @@ public class ValidationModal {
         Label t = new Label("zip extracted successfully"); 
         t.getStyleClass().add("result-title-ok");
         
-        String sizeMb = String.format("%.1f", stats.totalBytes / 1024.0 / 1024.0);
-        Label s = new Label(stats.fileCount + " files · " + sizeMb + " mb · 0 excluded by policy"); 
+        String sizeMb = String.format("%.1f", result.totalBytes() / 1024.0 / 1024.0);
+        String wrapperNote = (result.wrapperFolderName() != null) 
+            ? " · wrapper folder '" + result.wrapperFolderName() + "' detected"
+            : "";
+        Label s = new Label(result.fileCount() + " files · " + sizeMb + " mb" + wrapperNote); 
         s.getStyleClass().add("result-sub-ok");
         
         box.getChildren().addAll(t, s);
+        resultBox.getChildren().add(box);
+
+        // Structure warning — non-blocking dialog per LLD §6
+        ValidationResult validation = nav.getValidationResult();
+        if (validation != null && validation.structureWarning()) {
+            VBox warnBox = new VBox(2);
+            warnBox.setStyle("-fx-background-color:#3a2f1f;-fx-border-color:#5c3a1f;"
+                + "-fx-border-width:1;-fx-border-radius:6;-fx-background-radius:6;"
+                + "-fx-padding:8 12 8 12;");
+            Label warnTitle = new Label("⚠ structure warning");
+            warnTitle.setStyle("-fx-text-fill:#dcb67a;-fx-font-size:11px;-fx-font-weight:bold;");
+            Label warnMsg = new Label(validation.structureWarningMsg());
+            warnMsg.setStyle("-fx-text-fill:#c9b47a;-fx-font-size:11px;");
+            warnMsg.setWrapText(true);
+            warnBox.getChildren().addAll(warnTitle, warnMsg);
+            resultBox.getChildren().add(warnBox);
+        }
+
         Button cont = UI.primaryBtn("continue"); 
         cont.setMaxWidth(Double.MAX_VALUE);
         cont.setOnAction(e -> nav.showWorkspace());
         
-        resultBox.getChildren().addAll(box, cont);
+        resultBox.getChildren().add(cont);
     }
 
-    /** Displays the error alert box and return button. */
-    private void showError() {
+    /** Displays the error result box with the actual error message and retry button. */
+    private void showError(String errorMessage) {
         resultBox.getChildren().clear();
         VBox box = new VBox(2); 
         box.getStyleClass().add("result-error");
         
-        Label t = new Label("zip is corrupted"); 
+        Label t = new Label("validation failed"); 
         t.getStyleClass().add("result-title-err");
         
-        Label s = new Label("this archive could not be read. choose a different file."); 
+        String displayMsg = (errorMessage != null) ? errorMessage 
+            : "This archive could not be validated. Choose a different file.";
+        Label s = new Label(displayMsg); 
         s.getStyleClass().add("result-sub-err");
+        s.setWrapText(true);
         
         box.getChildren().addAll(t, s);
         Button choose = UI.secondaryBtn("choose another file"); 

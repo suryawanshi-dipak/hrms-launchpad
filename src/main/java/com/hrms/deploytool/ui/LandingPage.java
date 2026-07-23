@@ -1,12 +1,20 @@
 package com.hrms.deploytool.ui;
 
+import com.hrms.deploytool.archive.ZipExtractor;
+import com.hrms.deploytool.archive.ZipValidator;
+
 import javafx.beans.property.SimpleStringProperty;
 import javafx.collections.*;
 import javafx.geometry.*;
 import javafx.scene.Node;
 import javafx.scene.control.*;
 import javafx.scene.control.cell.PropertyValueFactory;
+import javafx.scene.input.DragEvent;
+import javafx.scene.input.TransferMode;
 import javafx.scene.layout.*;
+
+import java.io.File;
+import java.util.List;
 
 /** 
  * Page 1 — Landing / Deployment Overview.
@@ -38,16 +46,9 @@ public class LandingPage {
     private void build() {
         root.getStyleClass().addAll("bg-black", "padding-24");
 
-        // Demo controls
-        root.getChildren().add(buildDemoBar());
-        root.getChildren().add(UI.vspace(8));
-
-        // Frame label
-        root.getChildren().add(UI.frameLabel("PAGE 1 OF 3 — LANDING"));
-
         // App window using the centralized UI builder
         VBox appWindow = UI.appWindow(
-            UI.buildTopbar("HRMS deploy tool", UI.cloudIcon(), "page 1 of 3",
+            UI.buildTopbar("HRMS deploy tool", UI.cloudIcon(),
                 UI.iconBtn("⏱", "History"), UI.iconBtn("📄", "View log"),
                 UI.iconBtn("↻", "Refresh"), UI.iconBtn("⚙", "Settings")
             ),
@@ -57,28 +58,6 @@ public class LandingPage {
         root.getChildren().add(appWindow);
     }
 
-    /**
-     * Builds the demo control bar for UI prototyping interactions.
-     */
-    private HBox buildDemoBar() {
-        HBox bar = new HBox(8);
-        bar.setAlignment(Pos.CENTER_LEFT);
-        
-        Label demo = new Label("demo:");
-        demo.setStyle("-fx-text-fill:#6a6a6a;-fx-font-size:11px;");
-        
-        Button validBtn  = UI.demoBtn("select valid zip");
-        Button corruptBtn= UI.demoBtn("select corrupt zip");
-        Button resetBtn  = UI.demoBtn("reset to page 1");
-        
-        // Navigation triggers
-        validBtn.setOnAction(e  -> nav.showValidation(false));
-        corruptBtn.setOnAction(e-> nav.showValidation(true));
-        resetBtn.setOnAction(e  -> nav.showLanding());
-        
-        bar.getChildren().addAll(demo, validBtn, corruptBtn, resetBtn);
-        return bar;
-    }
 
     /**
      * Assembles the scrolling main body of the landing page containing the deployment cards.
@@ -127,7 +106,9 @@ public class LandingPage {
     // ── New Deployment card ──────────────────────────────────────────────────
     
     /**
-     * Builds the "New deployment" card which contains the file drop zone and currently staged file chip.
+     * Builds the "New deployment" card which contains the file drop zone and the file chip.
+     * The file chip is dynamically populated from the last successful validation result,
+     * or hidden if no zip has been validated yet.
      */
     private VBox buildDeployCard() {
         VBox card = UI.card();
@@ -146,7 +127,7 @@ public class LandingPage {
         envOk.getChildren().addAll(UI.checkCircle(13, "#7ec97e"), UI.envReady("environment ready"));
         hdr.getChildren().addAll(ct, sp, envOk);
 
-        // Drop zone mimicking HTML 5 drag-and-drop area
+        // Drop zone with real drag-and-drop support
         VBox dz = new VBox(10);
         dz.getStyleClass().add("dropzone");
         dz.setAlignment(Pos.CENTER);
@@ -163,48 +144,119 @@ public class LandingPage {
         
         Label dzSub = new Label("hrms_update_*.zip"); dzSub.getStyleClass().add("dz-sub");
         dz.getChildren().addAll(dzIcon, dzTitle, dzSub);
+
+        // Click to browse
         dz.setOnMouseClicked(e -> {
             javafx.stage.FileChooser fileChooser = new javafx.stage.FileChooser();
             fileChooser.setTitle("Select Update Zip File");
             fileChooser.getExtensionFilters().add(new javafx.stage.FileChooser.ExtensionFilter("ZIP Files", "*.zip"));
-            java.io.File selectedFile = fileChooser.showOpenDialog(dz.getScene().getWindow());
+            File selectedFile = fileChooser.showOpenDialog(dz.getScene().getWindow());
             if (selectedFile != null) {
                 nav.setSelectedZip(selectedFile);
-                nav.showValidation(false);
+                nav.showValidation();
             }
         });
-        // Staged file chip preview
-        HBox chip = new HBox(10);
-        chip.getStyleClass().add("file-chip");
-        chip.setAlignment(Pos.CENTER_LEFT);
-        chip.setMaxWidth(Double.MAX_VALUE);
-        chip.getChildren().addAll(
-            UI.zipIcon(),
-            UI.bold("hrms_update_v1.8.3.zip", "fname"),
-            UI.label("· 44.2 MB", "fsize"),
-            UI.checkPill("✓ no path traversal"),
-            UI.checkPill("✓ structure matches")
-        );
-        chip.setOnMouseClicked(e -> nav.showValidation(false));
+
+        // Drag-and-drop support
+        dz.setOnDragOver(event -> {
+            if (event.getDragboard().hasFiles()) {
+                event.acceptTransferModes(TransferMode.COPY);
+            }
+            event.consume();
+        });
+        dz.setOnDragEntered(event -> {
+            if (event.getDragboard().hasFiles()) {
+                dz.setStyle(dz.getStyle() + "-fx-border-color:#0e639c;-fx-background-color:#162030;");
+            }
+        });
+        dz.setOnDragExited(event -> {
+            // Reset style by removing inline overrides (CSS class handles default)
+            dz.setStyle("");
+        });
+        dz.setOnDragDropped(event -> {
+            List<File> files = event.getDragboard().getFiles();
+            if (files != null) {
+                File zipFile = files.stream()
+                    .filter(f -> f.getName().toLowerCase().endsWith(".zip"))
+                    .findFirst()
+                    .orElse(null);
+                if (zipFile != null) {
+                    nav.setSelectedZip(zipFile);
+                    nav.showValidation();
+                    event.setDropCompleted(true);
+                } else {
+                    event.setDropCompleted(false);
+                }
+            }
+            event.consume();
+        });
+
+        // Dynamic file chip — populated from validation/extraction results
+        HBox chip = buildFileChip();
 
         card.getChildren().addAll(hdr, UI.vspace(14), dz, UI.vspace(14), chip);
         VBox.setMargin(card, new Insets(0, 0, 2, 0));
         return card;
     }
 
+    /**
+     * Builds the file chip showing the last validated zip info.
+     * If no zip has been validated, shows a placeholder prompt.
+     */
+    private HBox buildFileChip() {
+        HBox chip = new HBox(10);
+        chip.getStyleClass().add("file-chip");
+        chip.setAlignment(Pos.CENTER_LEFT);
+        chip.setMaxWidth(Double.MAX_VALUE);
+
+        ZipExtractor.ExtractionResult extraction = nav.getExtractionResult();
+        ZipValidator.ValidationResult validation = nav.getValidationResult();
+
+        if (extraction != null && nav.getSelectedZip() != null) {
+            // Real data from the last successful validation
+            String filename = nav.getSelectedZip().getName();
+            String sizeMb = String.format("%.1f MB", nav.getSelectedZip().length() / 1024.0 / 1024.0);
+
+            chip.getChildren().addAll(
+                UI.zipIcon(),
+                UI.bold(filename, "fname"),
+                UI.label("· " + sizeMb, "fsize"),
+                UI.checkPill("✓ no path traversal"),
+                UI.checkPill("✓ structure matches")
+            );
+            chip.setOnMouseClicked(e -> nav.showWorkspace());
+        } else {
+            // Placeholder — no zip validated yet
+            Label placeholder = new Label("No update package validated yet — select a zip above");
+            placeholder.getStyleClass().add("fsize");
+            chip.getChildren().addAll(UI.zipIcon(), placeholder);
+            chip.setOpacity(0.5);
+        }
+
+        return chip;
+    }
+
     // ── Backup card ─────────────────────────────────────────────────────────
     
     /**
-     * Builds the backup card showing the last successfully generated rollback archive.
+     * Builds the backup card. Shows placeholder when no backup data exists.
+     * (Will be populated from config/SSH data in a future phase.)
      */
     private VBox buildBackupCard() {
         VBox card = UI.card();
         Label lbl  = new Label("LAST BACKUP"); lbl.getStyleClass().add("backup-label");
-        Label name = new Label("HRMS_backup_2026-07-20_09-14-02.tar.gz"); name.getStyleClass().add("backup-name");
+
+        // Placeholder — no real backup data available yet
+        Label name = new Label("No backup data available"); 
+        name.getStyleClass().add("backup-name");
+        name.setOpacity(0.5);
         
         HBox meta  = new HBox(5); 
         meta.setAlignment(Pos.CENTER_LEFT);
-        meta.getChildren().addAll(UI.shieldIcon(), UI.label("verified · 41.8 MB","backup-meta"));
+        Label metaText = new Label("Connect to the server to view backup history");
+        metaText.getStyleClass().add("backup-meta");
+        metaText.setOpacity(0.5);
+        meta.getChildren().addAll(UI.shieldIcon(), metaText);
 
         Separator sep = new Separator(); 
         sep.setPadding(new Insets(14,0,0,0));
@@ -217,11 +269,11 @@ public class LandingPage {
         logL.setAlignment(Pos.CENTER_LEFT);
         logL.getChildren().addAll(UI.docIcon(), UI.link("View deploy log"));
         
-        Region sp = new Region(); 
-        HBox.setHgrow(sp, Priority.ALWAYS);
+        Region sp2 = new Region(); 
+        HBox.setHgrow(sp2, Priority.ALWAYS);
         
         Label arr = new Label("↗"); arr.setStyle("-fx-text-fill:#9a9a9a;-fx-font-size:13px;");
-        logRow.getChildren().addAll(logL, sp, arr);
+        logRow.getChildren().addAll(logL, sp2, arr);
 
         card.getChildren().addAll(lbl, UI.vspace(6), name, UI.vspace(6), meta, sep, logRow);
         VBox.setMargin(card, new Insets(0,0,2,0));
@@ -232,6 +284,7 @@ public class LandingPage {
     
     /**
      * Builds the deployment history table.
+     * Shows a placeholder when no deployment history exists.
      */
     private VBox buildHistoryCard() {
         VBox card = UI.card();
@@ -245,71 +298,18 @@ public class LandingPage {
         
         Region sp = new Region(); 
         HBox.setHgrow(sp, Priority.ALWAYS);
-        Label last4 = new Label("last 4 releases"); last4.getStyleClass().add("text-secondary");
-        hdr.getChildren().addAll(hl, sp, last4);
+        Label placeholder = new Label("no deployments yet"); 
+        placeholder.getStyleClass().add("text-secondary");
+        hdr.getChildren().addAll(hl, sp, placeholder);
 
-        TableView<HistRow> table = buildHistTable();
-        table.setMaxHeight(200);
-        table.setFixedCellSize(50);
+        // Empty state label
+        Label emptyMsg = new Label("Deployment history will appear here after your first deployment.");
+        emptyMsg.getStyleClass().add("text-secondary");
+        emptyMsg.setOpacity(0.5);
+        emptyMsg.setPadding(new Insets(20, 0, 20, 0));
 
-        card.getChildren().addAll(hdr, UI.vspace(12), table);
+        card.getChildren().addAll(hdr, UI.vspace(12), emptyMsg);
         return card;
-    }
-
-    /**
-     * Creates and configures the History TableView.
-     */
-    @SuppressWarnings("unchecked")
-    private TableView<HistRow> buildHistTable() {
-        TableView<HistRow> table = new TableView<>();
-        table.getStyleClass().add("hist-table");
-        table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
-        table.setSelectionModel(null);
-
-        TableColumn<HistRow,String> tsCol  = col("TIMESTAMP", "timestamp", 180);
-        TableColumn<HistRow,String> verCol = col("VERSION",   "version",   80);
-        TableColumn<HistRow,String> stCol  = statusCol();
-        TableColumn<HistRow,String> szCol  = col("SIZE",      "size",      120);
-        
-        table.getColumns().addAll(tsCol, verCol, stCol, szCol);
-
-        ObservableList<HistRow> data = FXCollections.observableArrayList(
-            new HistRow("2026-07-20 09:14","v1.8.2","success","42.1 MB"),
-            new HistRow("2026-07-18 16:02","v1.8.1","success","38.6 MB"),
-            new HistRow("2026-07-15 11:47","v1.8.0","rolled back","51.3 MB"),
-            new HistRow("2026-07-11 08:30","v1.7.9","success","36.9 MB")
-        );
-        table.setItems(data);
-        return table;
-    }
-
-    /** Helper to build standard text-based TableColumns. */
-    private TableColumn<HistRow,String> col(String title, String prop, int w) {
-        TableColumn<HistRow,String> c = new TableColumn<>(title);
-        c.setCellValueFactory(new PropertyValueFactory<>(prop));
-        c.setMinWidth(w);
-        return c;
-    }
-
-    /** Helper to build the status column which renders custom visual badges instead of raw text. */
-    private TableColumn<HistRow,String> statusCol() {
-        TableColumn<HistRow,String> c = new TableColumn<>("STATUS");
-        c.setMinWidth(110);
-        c.setCellValueFactory(d -> new SimpleStringProperty(d.getValue().getStatus()));
-        c.setCellFactory(col -> new TableCell<>() {
-            @Override protected void updateItem(String item, boolean empty) {
-                super.updateItem(item, empty);
-                if (empty || item == null) { 
-                    setGraphic(null); 
-                    return; 
-                }
-                Label badge = new Label(item);
-                badge.getStyleClass().add(item.equals("success") ? "badge-success" : "badge-rolled");
-                setGraphic(badge); 
-                setText(null);
-            }
-        });
-        return c;
     }
 
     /** Data model for the History TableView. */
