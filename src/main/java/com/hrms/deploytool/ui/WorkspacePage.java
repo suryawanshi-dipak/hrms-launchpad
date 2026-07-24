@@ -6,8 +6,10 @@ import javafx.application.Platform;
 import javafx.concurrent.Task;
 import javafx.geometry.*;
 import javafx.scene.Node;
+import javafx.scene.Scene;
 import javafx.scene.control.*;
 import javafx.scene.layout.*;
+import javafx.stage.*;
 
 import java.io.File;
 import java.io.IOException;
@@ -32,6 +34,13 @@ public class WorkspacePage {
     private VBox connPanel;
     private Button connToggleBtn;
     private HBox verifiedBox;
+    private ProgressBar connProgressBar;
+    private Button saveProfileBtn;
+    private Button testConnBtn;
+    private Button testConnBarBtn;
+    private Button deployBtn;
+    private ProgressBar consoleProgressBar;
+    private Stage loadingStage;
 
     // Connection configuration fields
     private TextField hostField;
@@ -214,13 +223,21 @@ public class WorkspacePage {
         actions.setAlignment(Pos.CENTER_RIGHT); 
         actions.setPadding(new Insets(12,0,0,0));
         
-        Button save = UI.secondaryBtn("Save profile");
-        save.setOnAction(e -> saveConfig());
+        saveProfileBtn = UI.secondaryBtn("Save profile");
+        saveProfileBtn.setOnAction(e -> saveConfig());
         
-        Button test = UI.greenBtn("Test connection");
-        test.setOnAction(e -> testConnection(false));
+        testConnBtn = UI.greenBtn("Test connection");
+        testConnBtn.setOnAction(e -> testConnection(false));
         
-        actions.getChildren().addAll(save, test);
+        actions.getChildren().addAll(saveProfileBtn, testConnBtn);
+
+        // Indeterminate Connection Progress Bar
+        connProgressBar = new ProgressBar();
+        connProgressBar.setMaxWidth(Double.MAX_VALUE);
+        connProgressBar.setVisible(false);
+        connProgressBar.setManaged(false);
+        connProgressBar.getStyleClass().add("progress-bar");
+        VBox.setMargin(connProgressBar, new Insets(10, 0, 10, 0));
 
         // Verification success box
         verifiedBox = new HBox(10); 
@@ -240,7 +257,7 @@ public class WorkspacePage {
         
         verifiedBox.getChildren().addAll(vIcon, vt, vc);
 
-        connPanel.getChildren().addAll(connBar, form, actions, verifiedBox);
+        connPanel.getChildren().addAll(connBar, form, actions, connProgressBar, verifiedBox);
         return connPanel;
     }
 
@@ -444,11 +461,20 @@ public class WorkspacePage {
 
     /** Builds the terminal output readout. */
     private HBox buildConsole() {
-        HBox c = new HBox();
+        HBox c = new HBox(12);
+        c.setAlignment(Pos.CENTER_LEFT);
         c.setStyle("-fx-background-color:#181818;-fx-border-color:#333333 transparent transparent transparent;-fx-border-width:1;-fx-padding:8 12 8 12;-fx-min-height:52;-fx-max-height:52;");
+        
         lowerConsoleLabel = new Label("[SYSTEM] ready to deploy · awaiting connection confirmation");
         lowerConsoleLabel.getStyleClass().add("console-text");
-        c.getChildren().add(lowerConsoleLabel);
+        
+        consoleProgressBar = new ProgressBar();
+        consoleProgressBar.setPrefWidth(120);
+        consoleProgressBar.setVisible(false);
+        consoleProgressBar.setManaged(false);
+        consoleProgressBar.getStyleClass().add("progress-bar");
+        
+        c.getChildren().addAll(lowerConsoleLabel, consoleProgressBar);
         return c;
     }
 
@@ -490,13 +516,13 @@ public class WorkspacePage {
         HBox right = new HBox(10); 
         right.setAlignment(Pos.CENTER_RIGHT);
         
-        Button testConn = UI.outlineBtn("Test Connection");
-        testConn.setOnAction(e -> testConnection(false));
+        testConnBarBtn = UI.outlineBtn("Test Connection");
+        testConnBarBtn.setOnAction(e -> testConnection(false));
 
-        Button deploy = UI.greenBtn("Deploy to Server");
-        deploy.setOnAction(e -> startDeployment());
+        deployBtn = UI.greenBtn("Deploy to Server");
+        deployBtn.setOnAction(e -> startDeployment());
 
-        right.getChildren().addAll(testConn, deploy);
+        right.getChildren().addAll(testConnBarBtn, deployBtn);
 
         bar.getChildren().addAll(left, sp, right);
         return bar;
@@ -629,6 +655,24 @@ public class WorkspacePage {
 
         lowerConsoleLabel.setText("[SYSTEM] Testing SSH connection to " + host + "...");
         
+        // Disable controls and show progress bar during testing
+        if (saveProfileBtn != null) saveProfileBtn.setDisable(true);
+        if (testConnBtn != null) testConnBtn.setDisable(true);
+        if (testConnBarBtn != null) testConnBarBtn.setDisable(true);
+        if (deployBtn != null) deployBtn.setDisable(true);
+        
+        connProgressBar.setVisible(true);
+        connProgressBar.setManaged(true);
+        connProgressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
+
+        if (consoleProgressBar != null) {
+            consoleProgressBar.setVisible(true);
+            consoleProgressBar.setManaged(true);
+            consoleProgressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
+        }
+
+        showLoadingDialog("Testing connection to production server...");
+
         Task<Void> testTask = new Task<>() {
             @Override
             protected Void call() throws Exception {
@@ -644,6 +688,22 @@ public class WorkspacePage {
         };
 
         testTask.setOnSucceeded(event -> {
+            hideLoadingDialog();
+
+            // Restore controls and hide progress bar
+            if (saveProfileBtn != null) saveProfileBtn.setDisable(false);
+            if (testConnBtn != null) testConnBtn.setDisable(false);
+            if (testConnBarBtn != null) testConnBarBtn.setDisable(false);
+            if (deployBtn != null) deployBtn.setDisable(false);
+            
+            connProgressBar.setVisible(false);
+            connProgressBar.setManaged(false);
+
+            if (consoleProgressBar != null) {
+                consoleProgressBar.setVisible(false);
+                consoleProgressBar.setManaged(false);
+            }
+
             nav.setConnectionVerified(true);
             nav.setSessionPassphrase(passphrase); // Cache validated passphrase
             
@@ -662,6 +722,22 @@ public class WorkspacePage {
         });
 
         testTask.setOnFailed(event -> {
+            hideLoadingDialog();
+
+            // Restore controls and hide progress bar
+            if (saveProfileBtn != null) saveProfileBtn.setDisable(false);
+            if (testConnBtn != null) testConnBtn.setDisable(false);
+            if (testConnBarBtn != null) testConnBarBtn.setDisable(false);
+            if (deployBtn != null) deployBtn.setDisable(false);
+            
+            connProgressBar.setVisible(false);
+            connProgressBar.setManaged(false);
+
+            if (consoleProgressBar != null) {
+                consoleProgressBar.setVisible(false);
+                consoleProgressBar.setManaged(false);
+            }
+
             nav.setConnectionVerified(false);
             Throwable e = testTask.getException();
             lowerConsoleLabel.setText("[SYSTEM] SSH connection check failed: " + e.getMessage());
@@ -710,6 +786,14 @@ public class WorkspacePage {
 
         lowerConsoleLabel.setText("[SYSTEM] Fetching remote file structure from VM...");
         
+        if (consoleProgressBar != null) {
+            consoleProgressBar.setVisible(true);
+            consoleProgressBar.setManaged(true);
+            consoleProgressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
+        }
+
+        showLoadingDialog("Syncing remote directory structure...");
+        
         Task<List<String>> listTask = new Task<>() {
             @Override
             protected List<String> call() throws Exception {
@@ -728,12 +812,22 @@ public class WorkspacePage {
         };
 
         listTask.setOnSucceeded(event -> {
+            hideLoadingDialog();
+            if (consoleProgressBar != null) {
+                consoleProgressBar.setVisible(false);
+                consoleProgressBar.setManaged(false);
+            }
             List<String> remotePaths = listTask.getValue();
             updateTreesWithRemoteData(remotePaths);
             lowerConsoleLabel.setText("[SYSTEM] Remote file sync completed. NEW / OVERWRITE statuses resolved.");
         });
 
         listTask.setOnFailed(event -> {
+            hideLoadingDialog();
+            if (consoleProgressBar != null) {
+                consoleProgressBar.setVisible(false);
+                consoleProgressBar.setManaged(false);
+            }
             Throwable e = listTask.getException();
             lowerConsoleLabel.setText("[SYSTEM] Sync failed: " + e.getMessage());
         });
@@ -1124,6 +1218,50 @@ public class WorkspacePage {
                 setGraphic(null);
                 getStyleClass().add(item.startsWith("📁") ? "tree-folder" : "tree-file");
             }
+        }
+    }
+
+    private void showLoadingDialog(String message) {
+        if (loadingStage == null) {
+            loadingStage = new Stage();
+            loadingStage.initStyle(StageStyle.UNDECORATED);
+            loadingStage.initModality(Modality.APPLICATION_MODAL);
+            loadingStage.initOwner(nav.getStage());
+        }
+
+        VBox box = new VBox(15);
+        box.setAlignment(Pos.CENTER);
+        box.setStyle("-fx-background-color:#1e1e1e;-fx-border-color:#3c3c3c;-fx-border-width:1;-fx-padding:20;-fx-background-radius:6;-fx-border-radius:6;");
+        box.setPrefWidth(280);
+        box.setPrefHeight(120);
+
+        ProgressIndicator spinner = new ProgressIndicator();
+        spinner.setMaxSize(36, 36);
+        spinner.setStyle("-fx-progress-color:#7ec97e;");
+
+        Label label = new Label(message);
+        label.setStyle("-fx-text-fill:#dddddd;-fx-font-size:13px;-fx-font-family:'Segoe UI', sans-serif;-fx-font-weight:bold;");
+        label.setWrapText(true);
+        label.setAlignment(Pos.CENTER);
+
+        box.getChildren().addAll(spinner, label);
+
+        Scene scene = new Scene(box);
+        scene.setFill(null);
+        loadingStage.setScene(scene);
+
+        Stage owner = nav.getStage();
+        if (owner != null) {
+            loadingStage.setX(owner.getX() + owner.getWidth() / 2 - 140);
+            loadingStage.setY(owner.getY() + owner.getHeight() / 2 - 60);
+        }
+
+        loadingStage.show();
+    }
+
+    private void hideLoadingDialog() {
+        if (loadingStage != null) {
+            loadingStage.close();
         }
     }
 }
