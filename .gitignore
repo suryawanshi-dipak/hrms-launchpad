@@ -12,3 +12,22 @@ logs/
 run*.bat
 run*.ps1
 classpath.txt
+
+# Secrets & Private Keys
+*.key
+*.pem
+*.pub
+*.ppk
+id_*
+
+# Archives & Temp zip packages
+*.zip
+*.tar.gz
+*.tgz
+
+# Configuration properties (for safe local overrides)
+*.properties
+*.env
+
+# Local Workspace Customizations
+.agents/

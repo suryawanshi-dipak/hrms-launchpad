@@ -14,7 +14,13 @@ import javafx.scene.input.TransferMode;
 import javafx.scene.layout.*;
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Properties;
+import com.hrms.deploytool.deploy.ConfigManager;
 
 /** 
  * Page 1 — Landing / Deployment Overview.
@@ -46,11 +52,19 @@ public class LandingPage {
     private void build() {
         root.getStyleClass().addAll("bg-black", "padding-24");
 
+        Button logsBtn = UI.iconBtn("📄", "View log");
+        logsBtn.setOnAction(e -> nav.showLogsDialog());
+
+        Button settingsBtn = UI.iconBtn("⚙", "Settings");
+        settingsBtn.setOnAction(e -> nav.showSettingsDialog());
+
+        Button refreshBtn = UI.iconBtn("↻", "Refresh");
+        refreshBtn.setOnAction(e -> nav.showLanding());
+
         // App window using the centralized UI builder
         VBox appWindow = UI.appWindow(
             UI.buildTopbar("HRMS deploy tool", UI.cloudIcon(),
-                UI.iconBtn("⏱", "History"), UI.iconBtn("📄", "View log"),
-                UI.iconBtn("↻", "Refresh"), UI.iconBtn("⚙", "Settings")
+                UI.iconBtn("⏱", "History"), logsBtn, refreshBtn, settingsBtn
             ),
             buildBody()
         );
@@ -246,17 +260,31 @@ public class LandingPage {
         VBox card = UI.card();
         Label lbl  = new Label("LAST BACKUP"); lbl.getStyleClass().add("backup-label");
 
-        // Placeholder — no real backup data available yet
-        Label name = new Label("No backup data available"); 
-        name.getStyleClass().add("backup-name");
-        name.setOpacity(0.5);
-        
-        HBox meta  = new HBox(5); 
+        Properties config = ConfigManager.loadConfig();
+        String lastBackup = config.getProperty("lastBackupName");
+        String lastBackupTime = config.getProperty("lastBackupTimestamp");
+
+        Label name;
+        HBox meta = new HBox(5);
         meta.setAlignment(Pos.CENTER_LEFT);
-        Label metaText = new Label("Connect to the server to view backup history");
-        metaText.getStyleClass().add("backup-meta");
-        metaText.setOpacity(0.5);
-        meta.getChildren().addAll(UI.shieldIcon(), metaText);
+
+        if (lastBackup != null && !lastBackup.isEmpty()) {
+            name = new Label(lastBackup); 
+            name.getStyleClass().add("backup-name");
+            
+            Label metaText = new Label("Backup created on " + lastBackupTime.replace('_', ' ') + " · Verified");
+            metaText.getStyleClass().add("backup-meta");
+            meta.getChildren().addAll(UI.shieldIcon(), metaText);
+        } else {
+            name = new Label("No backup data available"); 
+            name.getStyleClass().add("backup-name");
+            name.setOpacity(0.5);
+            
+            Label metaText = new Label("Connect to the server to view backup history");
+            metaText.getStyleClass().add("backup-meta");
+            metaText.setOpacity(0.5);
+            meta.getChildren().addAll(UI.shieldIcon(), metaText);
+        }
 
         Separator sep = new Separator(); 
         sep.setPadding(new Insets(14,0,0,0));
@@ -268,6 +296,7 @@ public class LandingPage {
         HBox logL = new HBox(5); 
         logL.setAlignment(Pos.CENTER_LEFT);
         logL.getChildren().addAll(UI.docIcon(), UI.link("View deploy log"));
+        logL.setOnMouseClicked(e -> nav.showLogsDialog());
         
         Region sp2 = new Region(); 
         HBox.setHgrow(sp2, Priority.ALWAYS);
@@ -298,18 +327,102 @@ public class LandingPage {
         
         Region sp = new Region(); 
         HBox.setHgrow(sp, Priority.ALWAYS);
-        Label placeholder = new Label("no deployments yet"); 
-        placeholder.getStyleClass().add("text-secondary");
-        hdr.getChildren().addAll(hl, sp, placeholder);
+        hdr.getChildren().addAll(hl, sp);
 
-        // Empty state label
-        Label emptyMsg = new Label("Deployment history will appear here after your first deployment.");
-        emptyMsg.getStyleClass().add("text-secondary");
-        emptyMsg.setOpacity(0.5);
-        emptyMsg.setPadding(new Insets(20, 0, 20, 0));
+        File logsDir = ConfigManager.getLogsDir();
+        File[] logFiles = logsDir.listFiles((dir, name) -> name.startsWith("deploy_") && name.endsWith(".log"));
 
-        card.getChildren().addAll(hdr, UI.vspace(12), emptyMsg);
+        if (logFiles == null || logFiles.length == 0) {
+            Label placeholder = new Label("no deployments yet"); 
+            placeholder.getStyleClass().add("text-secondary");
+            hdr.getChildren().add(placeholder);
+
+            Label emptyMsg = new Label("Deployment history will appear here after your first deployment.");
+            emptyMsg.getStyleClass().add("text-secondary");
+            emptyMsg.setOpacity(0.5);
+            emptyMsg.setPadding(new Insets(20, 0, 20, 0));
+            card.getChildren().addAll(hdr, UI.vspace(12), emptyMsg);
+        } else {
+            Arrays.sort(logFiles, Comparator.comparingLong(File::lastModified).reversed());
+
+            TableView<HistRow> table = new TableView<>();
+            table.getStyleClass().add("hist-table");
+            table.setPrefHeight(180);
+
+            TableColumn<HistRow, String> colTime = new TableColumn<>("TIMESTAMP");
+            colTime.setCellValueFactory(new PropertyValueFactory<>("timestamp"));
+            colTime.setPrefWidth(150);
+
+            TableColumn<HistRow, String> colVer = new TableColumn<>("VERSION / ZIP");
+            colVer.setCellValueFactory(new PropertyValueFactory<>("version"));
+            colVer.setPrefWidth(220);
+
+            TableColumn<HistRow, String> colSize = new TableColumn<>("SIZE");
+            colSize.setCellValueFactory(new PropertyValueFactory<>("size"));
+            colSize.setPrefWidth(90);
+
+            TableColumn<HistRow, String> colStatus = new TableColumn<>("STATUS");
+            colStatus.setCellValueFactory(new PropertyValueFactory<>("status"));
+            colStatus.setPrefWidth(120);
+
+            colStatus.setCellFactory(column -> new TableCell<>() {
+                @Override
+                protected void updateItem(String item, boolean empty) {
+                    super.updateItem(item, empty);
+                    if (empty || item == null) {
+                        setGraphic(null);
+                        setText(null);
+                    } else {
+                        Label badge = new Label(item);
+                        if (item.equals("SUCCESS")) {
+                            badge.getStyleClass().add("badge-success");
+                        } else if (item.equals("ROLLED BACK")) {
+                            badge.getStyleClass().add("badge-rolled");
+                        } else {
+                            badge.setStyle("-fx-background-color:#3a1f1f;-fx-border-color:#5c2b2b;-fx-text-fill:#e06c75;-fx-font-size:10px;-fx-font-weight:bold;-fx-padding:3 9 3 9;-fx-background-radius:999;-fx-border-radius:999;-fx-border-width:1;");
+                        }
+                        setGraphic(badge);
+                        setText(null);
+                    }
+                }
+            });
+
+            table.getColumns().addAll(colTime, colVer, colSize, colStatus);
+            ObservableList<HistRow> data = FXCollections.observableArrayList();
+
+            for (File file : logFiles) {
+                String name = file.getName();
+                String timestampStr = name.substring(7, name.length() - 4).replace('_', ' ');
+
+                String status = "FAILED";
+                String zipName = "unknown.zip";
+                String sizeStr = formatFileSize(file.length());
+
+                try {
+                    List<String> lines = Files.readAllLines(file.toPath());
+                    for (String line : lines) {
+                        if (line.startsWith("HRMS DEPLOYMENT LOG - STATUS:")) {
+                            status = line.substring(line.indexOf("STATUS:") + 7).trim();
+                        }
+                        if (line.startsWith("Zip file:")) {
+                            zipName = line.substring(line.indexOf("Zip file:") + 9).trim();
+                        }
+                    }
+                } catch (IOException ignored) {}
+
+                data.add(new HistRow(timestampStr, zipName, status, sizeStr));
+            }
+
+            table.setItems(data);
+            card.getChildren().addAll(hdr, UI.vspace(12), table);
+        }
         return card;
+    }
+
+    private String formatFileSize(long bytes) {
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024 * 1024) return (bytes / 1024) + " KB";
+        return String.format("%.1f MB", bytes / 1024.0 / 1024.0);
     }
 
     /** Data model for the History TableView. */
